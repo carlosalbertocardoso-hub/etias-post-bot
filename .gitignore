@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+.firebase/
+functions/__pycache__/
+venv/
+.venv/

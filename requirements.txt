@@ -1,0 +1,6 @@
+anthropic
+requests
+beautifulsoup4
+pyyaml
+python-dotenv
+schedule

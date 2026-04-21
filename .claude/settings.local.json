@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python -c \"from scheduler import run_daily_job; run_daily_job\\(\\)\")",
+      "Bash(firebase --version)",
+      "Bash(firebase login *)",
+      "Bash(firebase login:ci)",
+      "Bash(firebase projects:list)",
+      "Bash(python -c \"from dotenv import load_dotenv; import os; load_dotenv\\(\\); print\\(os.getenv\\('ANTHROPIC_API_KEY'\\), end=''\\)\")",
+      "Bash(firebase functions:secrets:set ANTHROPIC_API_KEY --project etias-post-bot)",
+      "Bash(git init *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
+    ]
+  }
+}

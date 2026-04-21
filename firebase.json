@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "source": "functions",
+    "runtime": "python311",
+    "ignore": ["venv", ".git", "*.pyc", ".env", "__pycache__"],
+    "secretEnvironmentVariables": [
+      {"key": "ANTHROPIC_API_KEY"},
+      {"key": "WP_URL"},
+      {"key": "WP_USER"},
+      {"key": "WP_APP_PASSWORD"}
+    ]
+  }
+}

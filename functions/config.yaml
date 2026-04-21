@@ -1,0 +1,23 @@
+source_url: "https://etias.com/articles/"
+post_status: "draft"
+post_language: "en"
+posts_per_day: 1
+schedule_time: "08:00"
+
+categories_map:
+  etias: 538005402
+  "etias application": 755119488
+  "etias delay": 771938036
+  "border security": 38224
+  "european union": 46740
+  "eu tourism": 71517555
+  migration: 1158
+  immigration: 1892124
+  schengen: 185212
+  "schengen area": 2530278
+  "eu travel restrictions": 723349238
+  "entry-exit system": 101348830
+  news: 103
+  europe: 4328
+  frontex: 2400520
+  uk: 8199
