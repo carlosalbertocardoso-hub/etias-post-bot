@@ -8,7 +8,11 @@ load_dotenv()
 with open("config.yaml") as f:
     config = yaml.safe_load(f)
 
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+api_key = os.getenv("ANTHROPIC_API_KEY")
+if api_key:
+    api_key = api_key.strip()
+
+client = anthropic.Anthropic(api_key=api_key)
 
 
 def assign_categories(title, content):
