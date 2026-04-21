@@ -5,6 +5,9 @@ on:
     - cron: '0 8 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -29,9 +32,14 @@ jobs:
         run: python -c "from scheduler import run_daily_job; run_daily_job()"
 
       - name: Save state
+        if: success()
         run: |
           git config user.email "bot@etiaseuropa.eu"
           git config user.name "ETIAS Bot"
           git add posted_articles.json
-          git diff --staged --quiet || git commit -m "bot: update posted articles [skip ci]"
-          git push
+          if ! git diff --staged --quiet; then
+            git commit -m "bot: update posted articles [skip ci]"
+            git push
+          else
+            echo "No state changes to commit"
+          fi
