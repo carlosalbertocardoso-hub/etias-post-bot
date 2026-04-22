@@ -94,12 +94,12 @@ def run_bot(request):
         print(msg)
         return (msg, 500)
 
-    # 7. Guardar URL procesada en Firestore para no repetirla
+    # 7. Guardar URL procesada para no repetirla
     try:
-        posted = load_posted()
-        posted_set = set(posted)
-        posted_set.add(url)
-        save_posted(list(posted_set))
+        posted_urls, posted_titles = load_posted()
+        posted_urls.add(url)
+        posted_titles.append(title)
+        save_posted(posted_urls, posted_titles)
         print(f"URL guardada en estado: {url}")
     except Exception as e:
         # No es fatal: el post ya se publicó; solo logueamos el error

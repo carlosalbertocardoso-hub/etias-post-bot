@@ -1,11 +1,11 @@
 # WP Auto Publisher Agent
 
 ## Project Overview
-Automated WordPress blog post agent for etiaseuropa.eu. Scrapes etias.com/articles/ daily, generates original English articles using Claude AI, and saves them as drafts in WordPress via REST API.
+Automated WordPress blog post agent for etiaseuropa.eu. Scrapes etias.com/articles/ daily, generates original English articles using Claude AI, and publishes them to WordPress via REST API.
 
 ## Architecture
 - scraper.py: Scrapes etias.com/articles/ for new articles, fetches full content
-- agent.py: Uses Claude claude-opus-4-5 to generate original 400-600 word English posts
+- agent.py: Uses Claude claude-haiku-4-5 to generate original 400-600 word English posts
 - publisher.py: Posts to WordPress via REST API using Application Password auth
 - scheduler.py: Main entry point, runs daily job at configured time
 - config.yaml: Topics, schedule, category mappings
@@ -26,7 +26,7 @@ Automated WordPress blog post agent for etiaseuropa.eu. Scrapes etias.com/articl
 Generate Application Password at: wp-admin/profile.php → "Contraseñas de aplicación"
 
 ## Notes
-- Posts are saved as drafts (post_status: draft) for manual review before publishing
+- Posts are published directly (post_status: publish)
 - Categories are auto-assigned based on content keywords
 - 1 post per day maximum
 - Source: https://etias.com/articles/

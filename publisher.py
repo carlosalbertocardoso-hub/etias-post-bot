@@ -32,6 +32,7 @@ def upload_image(image_url, alt_text=""):
             },
             data=r.content,
             auth=(WP_USER, WP_APP_PASSWORD),
+            timeout=30,
         )
 
         if media_response.status_code in [200, 201]:
@@ -42,6 +43,7 @@ def upload_image(image_url, alt_text=""):
                     f"{WP_URL}/wp-json/wp/v2/media/{media_id}",
                     json={"alt_text": alt_text},
                     auth=(WP_USER, WP_APP_PASSWORD),
+                    timeout=15,
                 )
             print(f"Imagen subida: ID {media_id}")
             return media_id
@@ -72,6 +74,7 @@ def publish_post(title, content, categories, image_url=None, status="draft"):
         endpoint,
         json=payload,
         auth=(WP_USER, WP_APP_PASSWORD),
+        timeout=30,
     )
 
     if response.status_code in [200, 201]:

@@ -12,7 +12,11 @@ _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
 with open(_CONFIG_PATH) as f:
     config = yaml.safe_load(f)
 
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+api_key = os.getenv("ANTHROPIC_API_KEY")
+if api_key:
+    api_key = api_key.strip()
+
+client = anthropic.Anthropic(api_key=api_key)
 
 
 def assign_categories(title, content):
@@ -68,6 +72,9 @@ Write the post now:"""
             body_lines.append(line)
 
     body = "\n".join(body_lines).strip()
+
+    if not title:
+        title = source_title.strip() or "ETIAS Update"
 
     # Wrap plain paragraphs (not already HTML) in <p> tags
     html_parts = []

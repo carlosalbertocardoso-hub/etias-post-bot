@@ -5,7 +5,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-with open("config.yaml") as f:
+_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
+
+with open(_CONFIG_PATH) as f:
     config = yaml.safe_load(f)
 
 api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -68,6 +70,9 @@ Write the post now:"""
             body_lines.append(line)
 
     body = "\n".join(body_lines).strip()
+
+    if not title:
+        title = source_title.strip() or "ETIAS Update"
 
     # Wrap plain paragraphs (not already HTML) in <p> tags
     html_parts = []

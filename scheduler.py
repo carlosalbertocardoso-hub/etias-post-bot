@@ -1,3 +1,4 @@
+import os
 import schedule
 import time
 import yaml
@@ -5,7 +6,9 @@ from scraper import get_new_articles, fetch_article_content, load_posted, save_p
 from agent import generate_post
 from publisher import publish_post
 
-with open("config.yaml") as f:
+_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
+
+with open(_CONFIG_PATH) as f:
     config = yaml.safe_load(f)
 
 
@@ -37,9 +40,10 @@ def run_daily_job():
     )
 
     if post_id:
-        posted = load_posted()
-        posted.append(article["url"])
-        save_posted(posted)
+        posted_urls, posted_titles = load_posted()
+        posted_urls.add(article["url"])
+        posted_titles.append(post_data["title"])
+        save_posted(posted_urls, posted_titles)
 
 
 if __name__ == "__main__":
