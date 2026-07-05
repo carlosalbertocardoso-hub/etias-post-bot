@@ -2,6 +2,7 @@ import os
 import functions_framework
 import firebase_admin
 from firebase_admin import credentials, firestore
+import re
 
 # Inicializar firebase_admin una sola vez (las Cloud Functions reutilizan instancias)
 if not firebase_admin._apps:
@@ -10,6 +11,26 @@ if not firebase_admin._apps:
 from scraper import get_new_articles, fetch_article_content, load_posted, save_posted
 from agent import generate_post
 from publisher import publish_post
+
+
+META_PHRASES = [
+    "the source doesn't match",
+    "i cannot write",
+    "the instructions",
+    "the source article you've provided",
+    "there's a significant mismatch",
+    "you've shared is from",
+    "material you've provided",
+]
+
+
+def is_valid_title(title):
+    """Check that title is a real text title, not a URL or empty."""
+    if not title or len(title) < 10:
+        return False
+    if re.match(r"^https?://", title):
+        return False
+    return True
 
 
 @functions_framework.http
@@ -55,6 +76,31 @@ def run_bot(request):
     source_content = article_data.get("content", "")
     image_url = article_data.get("image_url")
 
+    # 3b. Validar datos fuente
+    if not article_data.get("valid"):
+        msg = f"Artículo inválido (no se pudo extraer contenido de la fuente), saltando."
+        print(msg)
+        posted_urls, posted_titles = load_posted()
+        posted_urls.add(url)
+        save_posted(posted_urls, posted_titles)
+        return (msg, 200)
+
+    if not source_content or len(source_content) < 100:
+        msg = f"Contenido extraído demasiado corto ({len(source_content)} chars), saltando."
+        print(msg)
+        posted_urls, posted_titles = load_posted()
+        posted_urls.add(url)
+        save_posted(posted_urls, posted_titles)
+        return (msg, 200)
+
+    if not is_valid_title(source_title):
+        msg = f"Título fuente inválido, saltando."
+        print(msg)
+        posted_urls, posted_titles = load_posted()
+        posted_urls.add(url)
+        save_posted(posted_urls, posted_titles)
+        return (msg, 200)
+
     if not source_content:
         msg = f"Contenido vacío para {url}, saltando."
         print(msg)
@@ -71,6 +117,34 @@ def run_bot(request):
     title = post_data["title"]
     content = post_data["content"]
     categories = post_data["categories"]
+
+    # 4b. Validar post generado
+    if post_data is None:
+        msg = f"Claude no generó un post válido, saltando."
+        print(msg)
+        posted_urls, posted_titles = load_posted()
+        posted_urls.add(url)
+        save_posted(posted_urls, posted_titles)
+        return (msg, 200)
+
+    if not is_valid_title(title):
+        msg = f"El título generado no es válido: '{title[:60]}', saltando."
+        print(msg)
+        posted_urls, posted_titles = load_posted()
+        posted_urls.add(url)
+        save_posted(posted_urls, posted_titles)
+        return (msg, 200)
+
+    # Check for meta-commentary in content
+    content_lower = (content or "").lower()
+    for phrase in META_PHRASES:
+        if phrase in content_lower:
+            msg = f"Contenido generado contiene meta-comentario ('{phrase}'), saltando."
+            print(msg)
+            posted_urls, posted_titles = load_posted()
+            posted_urls.add(url)
+            save_posted(posted_urls, posted_titles)
+            return (msg, 200)
 
     # 5. Determinar status desde variable de entorno (por defecto "draft" para seguridad)
     post_status = os.getenv("POST_STATUS", "draft")

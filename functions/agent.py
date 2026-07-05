@@ -1,6 +1,7 @@
 import anthropic
 import yaml
 import os
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -35,6 +36,8 @@ def generate_post(source_title, source_content, source_url):
 
 Write a complete, original blog post IN ENGLISH based on the source article below. The post must read naturally, like a real person wrote it — conversational but authoritative, never robotic.
 
+IMPORTANT: Do NOT write about the source article itself or point out mismatches. You MUST write an article relevant to ETIAS and European travel. If the source seems unrelated, use it as loose inspiration for a general European travel topic.
+
 STRICT RULES:
 - Write 500-650 words of body content
 - Output format: first line is TITLE: followed by the SEO title, then a blank line, then the article body
@@ -45,8 +48,9 @@ STRICT RULES:
 - Naturally include these SEO keywords where they fit: ETIAS, Schengen area, European travel, visa-free travel
 - Open with a strong first paragraph that hooks the reader and states what changed and why it matters
 - Close with a practical takeaway paragraph for travelers
-- Never mention the source website
+- Never mention the source website or the source article
 - Never use markdown symbols like #, **, or * anywhere
+- Never write meta-commentary ("the source doesn't match", "I cannot write about this topic", "the instructions say") — just write the article
 
 SOURCE TITLE: {source_title}
 SOURCE CONTENT:
@@ -74,7 +78,12 @@ Write the post now:"""
     body = "\n".join(body_lines).strip()
 
     if not title:
-        title = source_title.strip() or "ETIAS Update"
+        title = "ETIAS Update"
+
+    # Sanity: if title is a URL, reject it
+    if re.match(r"^https?://", title):
+        print(f"  ⚠ Título inválido (es una URL): {title[:60]}...")
+        return None
 
     # Wrap plain paragraphs (not already HTML) in <p> tags
     html_parts = []

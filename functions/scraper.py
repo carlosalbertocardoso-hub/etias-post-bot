@@ -169,13 +169,40 @@ def get_new_articles(source_url=None):
 def fetch_article_content(url):
     try:
         response = requests.get(url, timeout=15, headers=HEADERS)
-    except Exception:
-        return {"title": url, "content": "", "url": url, "image_url": None}
+    except Exception as e:
+        print(f"  ⚠ Error al obtener {url}: {e}")
+        return {"title": "", "content": "", "url": url, "image_url": None, "valid": False}
     soup = BeautifulSoup(response.text, "html.parser")
+
     title = ""
     h1 = soup.find("h1")
     if h1:
         title = h1.get_text(strip=True)
+
+    # Fallback: meta og:title
+    if not title:
+        og_title = soup.find("meta", property="og:title")
+        if og_title and og_title.get("content"):
+            title = og_title["content"].strip()
+    # Fallback: meta twitter:title
+    if not title:
+        tw_title = soup.find("meta", attrs={"name": "twitter:title"})
+        if tw_title and tw_title.get("content"):
+            title = tw_title["content"].strip()
+    # Fallback: meta title tag
+    if not title:
+        title_tag = soup.find("title")
+        if title_tag:
+            title = title_tag.get_text(strip=True)
+    # Extract domain for logging
+    from urllib.parse import urlparse
+    domain = urlparse(url).netloc
+
+    # If still no title or title is a URL, we can't use this article
+    if not title or title.startswith("http"):
+        print(f"  ⚠ No se pudo extraer título de {domain}, saltando.")
+        return {"title": "", "content": "", "url": url, "image_url": None, "valid": False}
+
     image_url = None
     og_img = soup.find("meta", property="og:image")
     if og_img and og_img.get("content"):
@@ -190,12 +217,15 @@ def fetch_article_content(url):
             img = article_tag.find("img", src=True)
             if img and img["src"].startswith("http"):
                 image_url = img["src"]
+
     content = ""
     article = soup.find("article") or soup.find("div", class_=lambda x: x and "content" in x.lower())
     if article:
         paragraphs = article.find_all("p")
         content = "\n\n".join(p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 30)
+
     if not content:
         paragraphs = soup.find_all("p")
         content = "\n\n".join(p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 30)
-    return {"title": title or url, "content": content, "url": url, "image_url": image_url}
+
+    return {"title": title, "content": content, "url": url, "image_url": image_url, "valid": True}
