@@ -63,6 +63,11 @@ def run_daily_job():
 
     # Generate post via AI
     print("  Generando post con Claude Haiku...")
+    # Load recent titles for internal linking context
+    _, recent_titles = load_posted()
+    from agent import set_recent_titles
+    set_recent_titles(recent_titles)
+    
     post_data = generate_post(
         source_data["title"],
         source_data["content"],
@@ -110,7 +115,8 @@ def run_daily_job():
         content=post_data["content"],
         categories=post_data["categories"],
         image_url=source_data.get("image_url"),
-        status=config["post_status"]
+        status=config["post_status"],
+        meta_description=post_data.get("meta_description"),
     )
 
     if post_id:

@@ -55,7 +55,7 @@ def upload_image(image_url, alt_text=""):
         return None
 
 
-def publish_post(title, content, categories, image_url=None, status="draft"):
+def publish_post(title, content, categories, image_url=None, status="draft", meta_description=None):
     featured_media_id = None
     if image_url:
         featured_media_id = upload_image(image_url, alt_text=title)
@@ -70,6 +70,12 @@ def publish_post(title, content, categories, image_url=None, status="draft"):
     if featured_media_id:
         payload["featured_media"] = featured_media_id
 
+    # Set meta_description via Rank Math custom field
+    if meta_description:
+        payload["meta"] = {
+            "rank_math_description": meta_description,
+        }
+
     response = requests.post(
         endpoint,
         json=payload,
@@ -80,7 +86,9 @@ def publish_post(title, content, categories, image_url=None, status="draft"):
     if response.status_code in [200, 201]:
         post = response.json()
         print(f"Post creado: '{title}' ID {post['id']} ({status})")
+        if meta_description:
+            print(f"  Meta description: {meta_description[:80]}...")
         return post["id"]
     else:
-        print(f"Error al publicar: {response.status_code} - {response.text}")
+        print(f"Error al publicar: {response.status_code} - {response.text[:300]}")
         return None
