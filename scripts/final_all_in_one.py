@@ -2,9 +2,9 @@
 import os, requests, json, sys, time, re
 
 W = os.getenv("WP_URL", "https://etiaseuropa.eu")
-U = os.getenv("WP_USER")
-P = os.getenv("WP_APP_PASSWORD")
-K = os.getenv("ANTHROPIC_API_KEY")
+U = (os.getenv("WP_USER") or "").strip()
+P = (os.getenv("WP_APP_PASSWORD") or "").strip()
+K = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
 A = (U, P)
 H = {"User-Agent": "Mozilla/5.0"}
 T = time.strftime("%B %d, %Y")
