@@ -1,4 +1,4 @@
-from agent import assign_categories, _parse_generated_post
+from agent import assign_categories, _parse_generated_post, _sanitize_internal_links
 
 
 def test_assign_categories_matches_whole_word():
@@ -33,3 +33,19 @@ def test_parse_handles_blank_line_between_title_and_meta():
     assert result["title"] == "A Real Title"
     assert result["meta_description"].startswith("A proper meta description")
     assert "META:" not in result["content"]
+
+
+def test_sanitize_internal_links_keeps_allowed_href():
+    html = '<p>See our <a href="https://etiaseuropa.eu/real-post">real guide</a>.</p>'
+    result = _sanitize_internal_links(html, ["https://etiaseuropa.eu/real-post"])
+    assert '<a href="https://etiaseuropa.eu/real-post">' in result
+
+
+def test_sanitize_internal_links_strips_hallucinated_href():
+    # Nothing validated that a Claude-generated href matched a real candidate
+    # before this existed -- untrusted RSS source text could inject or the
+    # model could hallucinate a URL, and it would publish live either way.
+    html = '<p>See our <a href="https://evil.example.com/phish">travel guide</a>.</p>'
+    result = _sanitize_internal_links(html, ["https://etiaseuropa.eu/real-post"])
+    assert "evil.example.com" not in result
+    assert "travel guide" in result

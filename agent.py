@@ -43,6 +43,31 @@ def _candidate_links_block(posts):
     return "\n".join(f'- "{p["title"]}" — {p["url"]}' for p in posts)
 
 
+_HREF_RE = re.compile(r'<a\s+href="([^"]*)"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+
+
+def _sanitize_internal_links(html_body, allowed_urls):
+    """Strip any <a href> Claude generated that isn't one of the real candidate
+    URLs it was given -- source_content (RSS text, up to 4000 chars) is
+    untrusted external input, and nothing validated that a generated href
+    actually matched a candidate before this was published live. A prompt
+    injection or a slightly-hallucinated URL would otherwise go straight to
+    a real post with zero human review (config.yaml: post_status: publish).
+    Unrecognized links are downgraded to plain text, not rejected outright,
+    so one bad link doesn't waste an otherwise-good article.
+    """
+    allowed = set(allowed_urls)
+
+    def _keep_or_strip(match):
+        href, anchor_text = match.group(1), match.group(2)
+        if href in allowed:
+            return match.group(0)
+        print(f"  ⚠ Enlace no reconocido eliminado (no es un candidato real): {href}")
+        return anchor_text
+
+    return _HREF_RE.sub(_keep_or_strip, html_body)
+
+
 def assign_categories(title, content):
     text = (title + " " + content).lower()
     matched = []
@@ -85,7 +110,7 @@ def _call_claude(prompt, max_tokens=4000):
     return message.content[0].text.strip()
 
 
-def _parse_generated_post(response_text):
+def _parse_generated_post(response_text, allowed_link_urls=()):
     """Shared TITLE:/META:/body parser used by both fresh generation and rewrites."""
     lines = response_text.split("\n")
     title = ""
@@ -143,6 +168,7 @@ def _parse_generated_post(response_text):
             html_parts.append(f"<p>{block}</p>")
 
     html_body = "\n".join(html_parts)
+    html_body = _sanitize_internal_links(html_body, allowed_link_urls)
     categories = assign_categories(title, body)
 
     return {
@@ -192,7 +218,8 @@ SOURCE CONTENT:
 
 Write the post now:"""
 
-    return _parse_generated_post(_call_claude(prompt))
+    allowed_urls = [p["url"] for p in _RECENT_POSTS_CACHE]
+    return _parse_generated_post(_call_claude(prompt), allowed_urls)
 
 
 def rewrite_post(existing_title, existing_content_html, candidate_posts):
@@ -206,9 +233,8 @@ def rewrite_post(existing_title, existing_content_html, candidate_posts):
     ETIAS travel" framing -- without inventing new facts the model can't
     verify.
     """
-    candidate_links = _candidate_links_block(
-        [p for p in candidate_posts if p.get("title") != existing_title]
-    )
+    own_candidates = [p for p in candidate_posts if p.get("title") != existing_title]
+    candidate_links = _candidate_links_block(own_candidates)
 
     prompt = f"""You are an experienced travel journalist doing an editorial rewrite pass for {SITE_NAME}, a site focused on ETIAS and European travel regulations.
 
@@ -232,4 +258,5 @@ EXISTING ARTICLE CONTENT:
 
 Write the rewritten post now:"""
 
-    return _parse_generated_post(_call_claude(prompt))
+    allowed_urls = [p["url"] for p in own_candidates]
+    return _parse_generated_post(_call_claude(prompt), allowed_urls)

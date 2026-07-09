@@ -42,9 +42,17 @@ _RELEVANT_KEYWORDS = {
 }
 
 
+_RELEVANT_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(kw) for kw in _RELEVANT_KEYWORDS) + r")\b"
+)
+
+
 def _is_relevant(title):
-    lowered = title.lower()
-    return any(kw in lowered for kw in _RELEVANT_KEYWORDS)
+    # Plain substring matching reintroduced the exact bug just fixed in
+    # assign_categories() -- "visa" matched inside "improvisation"/"advisable",
+    # letting unrelated crime/politics/sports headlines back through the
+    # filter this function exists to enforce.
+    return bool(_RELEVANT_PATTERN.search(title.lower()))
 
 
 def _make_session():
