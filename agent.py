@@ -24,21 +24,34 @@ AUTHOR_NAME = "Carlos Cardoso"
 AUTHOR_URL = "https://etiaseuropa.eu/author/carlos-cardoso/"
 TODAY = datetime.now(timezone.utc).strftime("%B %d, %Y")
 
-# Recent published titles for internal linking context
-_RECENT_TITLES_CACHE = []
+# Recent published posts (title + real URL) for internal linking context.
+# Previously this only cached titles (no URLs), so the prompt could only ask
+# for fake plain-text "Check our guide on X" suggestions -- no href, no real
+# SEO value, and arguably misleading since no such guide link existed.
+_RECENT_POSTS_CACHE = []
 
 
-def set_recent_titles(titles):
-    """Set recent post titles so the prompt can suggest related reads."""
-    global _RECENT_TITLES_CACHE
-    _RECENT_TITLES_CACHE = titles[-10:] if titles else []
+def set_recent_posts(posts):
+    """posts: list of {"title": str, "url": str}. Used to offer real internal links."""
+    global _RECENT_POSTS_CACHE
+    _RECENT_POSTS_CACHE = posts[-10:] if posts else []
+
+
+def _candidate_links_block(posts):
+    if not posts:
+        return "(no other published posts available to link to)"
+    return "\n".join(f'- "{p["title"]}" — {p["url"]}' for p in posts)
 
 
 def assign_categories(title, content):
     text = (title + " " + content).lower()
     matched = []
     for keyword, cat_id in config["categories_map"].items():
-        if keyword.lower() in text:
+        # Word-boundary match -- plain substring matching false-positived on
+        # short keywords like "uk" (matches inside "duke", "bunker", etc.),
+        # silently mis-categorizing posts.
+        pattern = r"\b" + re.escape(keyword.lower()) + r"\b"
+        if re.search(pattern, text):
             matched.append(cat_id)
     if not matched:
         matched = [538005402]
@@ -63,54 +76,17 @@ def generate_meta_description(title, content_text):
     return meta.strip()[:160]
 
 
-def generate_post(source_title, source_content, source_url):
-    recent_links = ""
-    if _RECENT_TITLES_CACHE:
-        recent_items = _RECENT_TITLES_CACHE[-3:]
-        recent_links = "\nRecent articles on the same site (for reference, suggest as related reads):\n"
-        for rt in recent_items:
-            slug = rt.lower().replace(" ", "-").replace("—", "").replace("'", "")[:60]
-            recent_links += f"- {rt}\n"
-
-    prompt = f"""You are an experienced travel journalist writing for {SITE_NAME}, a site focused on ETIAS and European travel regulations. Your readers are travelers from around the world planning trips to Europe.
-
-Write a complete, original, in-depth blog post IN ENGLISH based on the source article below. The post must read naturally, like a real person wrote it — conversational but authoritative, never robotic.
-
-IMPORTANT: Do NOT write about the source article itself or point out mismatches. You MUST write an article relevant to ETIAS and European travel. If the source seems unrelated, use it as loose inspiration for a general European travel topic.
-
-STRICT RULES:
-- Write 1,200-1,500 words of body content — be comprehensive and cover subtopics
-- Output format:
-  Line 1: TITLE: followed by the SEO title (under 60 characters, include main keyword naturally)
-  Line 2: META: followed by a 150-160 character meta description
-  Line 3: blank
-  Line 4+: article body
-- Structure the body with 5-7 sections, each introduced by an <h2> tag
-- Write in flowing paragraphs under each subheading — no bullet lists, no numbered lists unless comparing options
-- Tone: warm, clear, trustworthy — like advice from a knowledgeable friend
-- Naturally include these SEO keywords where they fit: ETIAS, Schengen area, European travel, visa-free travel, travel authorization
-- Open with a strong first paragraph that hooks the reader and states what changed and why it matters
-- Close with a practical takeaway paragraph for travelers
-- At the very end, add this exact line as a separate paragraph:
-  <p><em>Article by {AUTHOR_NAME} — updated {TODAY}. Always verify current requirements on official EU channels before traveling.</em></p>
-- Then add a "Related reading" section with an <h2>Related Articles on {SITE_NAME}</h2> and mention up to 2 related topics the reader might find useful (as plain text suggestions like "Check our guide on [topic]" or "Read more about [topic]")
-- Never mention the source website or the source article
-- Never use markdown symbols like #, **, or * anywhere
-- Never write meta-commentary ("the source doesn't match", "I cannot write about this topic", "the instructions say") — just write the article
-{recent_links}
-SOURCE TITLE: {source_title}
-SOURCE CONTENT:
-{source_content[:4000]}
-
-Write the post now:"""
-
+def _call_claude(prompt, max_tokens=4000):
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=4000,
+        max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}]
     )
+    return message.content[0].text.strip()
 
-    response_text = message.content[0].text.strip()
+
+def _parse_generated_post(response_text):
+    """Shared TITLE:/META:/body parser used by both fresh generation and rewrites."""
     lines = response_text.split("\n")
     title = ""
     meta_desc = ""
@@ -119,12 +95,19 @@ Write the post now:"""
 
     for line in lines:
         if mode == "header":
-            if line.startswith("TITLE:") and not title:
-                title = line.replace("TITLE:", "").strip()
-            elif line.startswith("META:") and not meta_desc:
-                meta_desc = line.replace("META:", "").strip()
-            elif line.strip() == "":
-                mode = "body"
+            stripped = line.strip()
+            if stripped.startswith("TITLE:") and not title:
+                title = stripped[len("TITLE:"):].strip()
+            elif stripped.startswith("META:") and not meta_desc:
+                meta_desc = stripped[len("META:"):].strip()
+            elif stripped == "":
+                # Blank line while still in header -- Claude doesn't always put
+                # TITLE/META on strictly consecutive lines. Previously this
+                # dropped straight into body mode, so a META: line arriving
+                # after a stray blank line got treated as the first paragraph
+                # of body text -- real leaked "META: ..." text was found live
+                # on 4 of 123 published posts.
+                continue
             else:
                 mode = "body"
                 body_lines.append(line)
@@ -136,15 +119,17 @@ Write the post now:"""
     if not title:
         title = "ETIAS Update"
 
-    # Sanity: if title is a URL, reject it
     if re.match(r"^https?://", title):
         print(f"  ⚠ Título inválido (es una URL): {title[:60]}...")
         return None
 
-    # Auto-generate meta description if Claude didn't provide one
     if not meta_desc or len(meta_desc) < 50:
         meta_desc = generate_meta_description(title, body)
         print(f"  ℹ Meta description auto-generada ({len(meta_desc)} chars)")
+    elif len(meta_desc) > 160:
+        # Google truncates SERP snippets around ~155-160 chars -- Claude's
+        # own META: line isn't length-capped like the auto-fallback is.
+        meta_desc = meta_desc[:157].rsplit(" ", 1)[0] + "..."
 
     # Wrap plain paragraphs (not already HTML) in <p> tags
     html_parts = []
@@ -166,3 +151,85 @@ Write the post now:"""
         "meta_description": meta_desc,
         "categories": categories,
     }
+
+
+_COMMON_RULES = f"""- Output format:
+  Line 1: TITLE: followed by the SEO title (under 60 characters, include main keyword naturally)
+  Line 2: META: followed by a 150-160 character meta description
+  Line 3: blank
+  Line 4+: article body
+- Write in flowing paragraphs under each subheading — no bullet lists, no numbered lists unless comparing options
+- Tone: warm, clear, trustworthy — like advice from a knowledgeable friend
+- Naturally include these SEO keywords where they fit: ETIAS, Schengen area, European travel, visa-free travel, travel authorization
+- Near the end, close with a byline paragraph mentioning {AUTHOR_NAME} and that it was last updated {TODAY}, advising readers to verify current requirements on official EU channels -- write this naturally in your own words, do NOT copy a fixed sentence (this exact sentence must NOT be identical across articles, so vary the phrasing every time)
+- Never mention the source website or the source article
+- Never use markdown symbols like #, **, or * anywhere
+- Never write meta-commentary ("the source doesn't match", "I cannot write about this topic", "the instructions say") — just write the article"""
+
+
+def generate_post(source_title, source_content, source_url):
+    candidate_links = _candidate_links_block(_RECENT_POSTS_CACHE)
+
+    prompt = f"""You are an experienced travel journalist writing for {SITE_NAME}, a site focused on ETIAS and European travel regulations. Your readers are travelers from around the world planning trips to Europe.
+
+Write a complete, original, in-depth blog post IN ENGLISH based on the source article below. The post must read naturally, like a real person wrote it — conversational but authoritative, never robotic.
+
+IMPORTANT: Base the article on the real substance of the source below — it was already screened for relevance to ETIAS/Schengen/EU travel/immigration before reaching you. Do not invent an unrelated travel angle and do not mention the source website or point out mismatches.
+
+STRICT RULES:
+- Write 1,200-1,500 words of body content — be comprehensive and cover subtopics
+- Structure the body with 5-7 sections, each introduced by an <h2> tag
+{_COMMON_RULES}
+- Open with a strong first paragraph that hooks the reader and states what changed and why it matters
+- Close with a practical takeaway paragraph for travelers
+- CANDIDATE internal links (real posts already published on {SITE_NAME}):
+{candidate_links}
+  If (and only if) 1-2 of these are genuinely relevant to this article's topic, weave them in naturally as real HTML links using their exact URL, e.g. <a href="URL">anchor text</a>. If none are genuinely relevant, do not mention related articles at all -- never invent a fake "check our guide" suggestion with no real link behind it
+
+SOURCE TITLE: {source_title}
+SOURCE CONTENT:
+{source_content[:4000]}
+
+Write the post now:"""
+
+    return _parse_generated_post(_call_claude(prompt))
+
+
+def rewrite_post(existing_title, existing_content_html, candidate_posts):
+    """Rewrite an already-published post in place, for the post-penalty cleanup pass.
+
+    Unlike generate_post (grounded in a freshly scraped external source), this
+    is grounded in the site's OWN existing article -- no external source to
+    misattribute. Goal: fix the exact pattern Google's scaled-content-abuse
+    policy targets -- templated structure repeated across every post, and (on
+    some earlier posts) a strained "how this unrelated news affects your
+    ETIAS travel" framing -- without inventing new facts the model can't
+    verify.
+    """
+    candidate_links = _candidate_links_block(
+        [p for p in candidate_posts if p.get("title") != existing_title]
+    )
+
+    prompt = f"""You are an experienced travel journalist doing an editorial rewrite pass for {SITE_NAME}, a site focused on ETIAS and European travel regulations.
+
+Below is an article ALREADY PUBLISHED on the site. Rewrite it into a genuinely useful, in-depth, original piece IN ENGLISH on the same core topic. This is a quality-recovery rewrite (the site was hit by an algorithmic update for templated, low-value AI content), so:
+
+- If the existing article manufactures a strained link between an unrelated news event (crime, politics, sports, etc.) and ETIAS/travel, DROP that manufactured angle. Rewrite around the genuine, real ETIAS/Schengen/EU-travel topic actually present in the piece -- do not keep pretending an unrelated event is travel-relevant.
+- Do not invent statistics, dates, or claims you cannot ground in the existing text or well-established general knowledge about ETIAS/Schengen. If the original article has a specific invented-sounding stat you can't verify, drop it or soften it to a general statement.
+- Vary the structure -- do NOT force the exact same number of sections or the same opening pattern used elsewhere on this site. Let the topic dictate structure (could be 3 sections, could be 8).
+- Go deeper and be genuinely more useful than the original: concrete specifics, practical guidance, real expertise -- not padding.
+
+STRICT RULES:
+- Write 900-1,400 words of body content, whatever length genuinely fits the topic
+{_COMMON_RULES}
+- CANDIDATE internal links (other real posts on {SITE_NAME}):
+{candidate_links}
+  If (and only if) 1-2 are genuinely relevant, weave them in as real HTML links using their exact URL, e.g. <a href="URL">anchor text</a>. Otherwise omit related-reading entirely -- never invent a fake link-free suggestion.
+
+EXISTING ARTICLE TITLE: {existing_title}
+EXISTING ARTICLE CONTENT:
+{existing_content_html[:6000]}
+
+Write the rewritten post now:"""
+
+    return _parse_generated_post(_call_claude(prompt))

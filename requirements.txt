@@ -4,3 +4,4 @@ beautifulsoup4
 pyyaml
 python-dotenv
 schedule
+feedparser

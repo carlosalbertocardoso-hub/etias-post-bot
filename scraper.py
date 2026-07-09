@@ -1,11 +1,12 @@
 import re
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
+import feedparser
 import json
 import os
 from datetime import datetime, timezone, timedelta
-import xml.etree.ElementTree as ET
-from email.utils import parsedate_to_datetime
 
 POSTED_FILE = "posted_articles.json"
 ETIAS_ARTICLES = "https://etias.com/articles/"
@@ -24,6 +25,42 @@ EXTRA_RSS = [
     "https://www.politico.eu/feed/",
     "https://rss.dw.com/rdf/rss-en-eu",
 ]
+
+# RSS sources beyond etias.com/articles cover general EU news (politics, crime,
+# sports...), not just travel. Without a topical filter, the bot was turning
+# unrelated stories (e.g. a politician's office being raided, a crime suspect
+# sought in Monaco) into invented "how this affects your ETIAS travel" posts --
+# real reputational/SEO risk (off-topic EEAT signals, borrows crime/politics
+# news to manufacture fake travel angles). Only etias.com/articles is exempt
+# from this filter -- it's already 100% on-topic by definition.
+_RELEVANT_KEYWORDS = {
+    "etias", "schengen", "visa", "border", "passport", "travel", "tourist",
+    "tourism", "airport", "flight", "airline", "migration", "immigration",
+    "asylum", "refugee", "frontex", "entry-exit", "eu entry", "residency",
+    "residence permit", "work permit", "blue card", "digital nomad",
+    "eu travel", "european travel", "eea", "customs",
+}
+
+
+def _is_relevant(title):
+    lowered = title.lower()
+    return any(kw in lowered for kw in _RELEVANT_KEYWORDS)
+
+
+def _make_session():
+    session = requests.Session()
+    retry = Retry(
+        total=2, backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+SESSION = _make_session()
 
 _STOP_WORDS = {
     "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
@@ -62,15 +99,36 @@ def load_posted():
     return set(), []
 
 
-def save_posted(urls, titles):
+def load_post_links():
+    """Returns list of {"title", "url"} for real internal-linking candidates.
+
+    Kept separate from load_posted() (source URLs) -- this tracks the
+    resulting WP post permalink, needed to offer real <a href> links instead
+    of the old fake plain-text "check our guide on X" suggestions.
+    """
+    if os.path.exists(POSTED_FILE):
+        with open(POSTED_FILE, "r") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data.get("post_links", [])
+    return []
+
+
+def save_posted(urls, titles, post_links=None):
+    if post_links is None:
+        post_links = load_post_links()
     with open(POSTED_FILE, "w") as f:
-        json.dump({"urls": sorted(urls), "titles": list(titles)}, f, indent=2)
+        json.dump(
+            {"urls": sorted(urls), "titles": list(titles), "post_links": post_links},
+            f, indent=2,
+        )
 
 
 def _scrape_etias_articles(posted_urls):
     try:
-        response = requests.get(ETIAS_ARTICLES, timeout=15, headers=HEADERS)
-    except Exception:
+        response = SESSION.get(ETIAS_ARTICLES, timeout=15, headers=HEADERS)
+    except Exception as e:
+        print(f"  ⚠ Error al scrapear {ETIAS_ARTICLES}: {e}")
         return []
     soup = BeautifulSoup(response.text, "html.parser")
 
@@ -96,41 +154,37 @@ def _scrape_etias_articles(posted_urls):
 
 
 def _scrape_rss(rss_url, posted_urls, seen):
+    # feedparser (not xml.etree) -- handles malformed XML, mixed RSS/Atom/RDF
+    # dialects and encoding quirks across these 5 different publishers instead
+    # of silently returning [] on the first parse error.
     cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
     articles = []
     try:
-        r = requests.get(rss_url, timeout=15, headers=HEADERS)
+        r = SESSION.get(rss_url, timeout=15, headers=HEADERS)
         if r.status_code != 200:
+            print(f"  ⚠ RSS {rss_url} devolvió status {r.status_code}")
             return []
-        root = ET.fromstring(r.content)
-    except Exception:
+        feed = feedparser.parse(r.content)
+    except Exception as e:
+        print(f"  ⚠ Error al leer RSS {rss_url}: {e}")
         return []
 
-    for item in root.iter("item"):
-        title_el = item.find("title")
-        link_el = item.find("link")
-        pub_el = item.find("pubDate")
-
-        if title_el is None or link_el is None:
-            continue
-
-        title = (title_el.text or "").strip()
-        link = (link_el.text or "").strip()
+    for entry in feed.entries:
+        title = (getattr(entry, "title", "") or "").strip()
+        link = (getattr(entry, "link", "") or "").strip()
 
         if not link or not title or len(title) <= 10:
             continue
         if link in posted_urls or link in seen:
             continue
+        if not _is_relevant(title):
+            continue
 
-        if pub_el is not None and pub_el.text:
-            try:
-                pub_date = parsedate_to_datetime(pub_el.text.strip())
-                if pub_date.tzinfo is None:
-                    pub_date = pub_date.replace(tzinfo=timezone.utc)
-                if pub_date < cutoff:
-                    continue
-            except (TypeError, ValueError):
-                pass
+        pub_parsed = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
+        if pub_parsed:
+            pub_date = datetime(*pub_parsed[:6], tzinfo=timezone.utc)
+            if pub_date < cutoff:
+                continue
 
         seen.add(link)
         articles.append({"url": link, "title": title})
@@ -160,7 +214,7 @@ def get_new_articles(source_url=None):
 
 def fetch_article_content(url):
     try:
-        response = requests.get(url, timeout=15, headers=HEADERS)
+        response = SESSION.get(url, timeout=15, headers=HEADERS)
     except Exception as e:
         print(f"  ⚠ Error al obtener {url}: {e}")
         return {"title": "", "content": "", "url": url, "image_url": None, "valid": False}

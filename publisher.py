@@ -76,19 +76,23 @@ def publish_post(title, content, categories, image_url=None, status="draft", met
             "rank_math_description": meta_description,
         }
 
-    response = requests.post(
-        endpoint,
-        json=payload,
-        auth=(WP_USER, WP_APP_PASSWORD),
-        timeout=30,
-    )
+    try:
+        response = requests.post(
+            endpoint,
+            json=payload,
+            auth=(WP_USER, WP_APP_PASSWORD),
+            timeout=30,
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"Error de red al publicar: {e}")
+        return None
 
     if response.status_code in [200, 201]:
         post = response.json()
         print(f"Post creado: '{title}' ID {post['id']} ({status})")
         if meta_description:
             print(f"  Meta description: {meta_description[:80]}...")
-        return post["id"]
+        return {"id": post["id"], "link": post.get("link")}
     else:
         print(f"Error al publicar: {response.status_code} - {response.text[:300]}")
         return None
