@@ -52,7 +52,8 @@ jobs:
         run: |
           git config user.email "bot@etiaseuropa.eu"
           git config user.name "ETIAS Bot"
-          git add posted_articles.json last_run.json 2>/dev/null || true
+          git add posted_articles.json
+          git add last_run.json 2>/dev/null || true
           if ! git diff --staged --quiet; then
             git commit -m "bot: update posted articles [skip ci]"
             git push
@@ -61,7 +62,11 @@ jobs:
           fi
 
       - name: Alert on failure
-        if: failure() && env.ALERT_WEBHOOK_URL != ''
+        # A step's own env: block is NOT visible in that same step's if:
+        # (only job/workflow-level env is) -- must reference secrets.* here
+        # directly, otherwise this condition is permanently false regardless
+        # of whether the secret is configured.
+        if: failure() && secrets.ALERT_WEBHOOK_URL != ''
         env:
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
         run: |

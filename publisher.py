@@ -23,10 +23,16 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 def _make_session():
     session = requests.Session()
+    # GET only: WordPress's POST endpoints here create resources (a media
+    # item, a post). A 502/503/504 can mean the request already reached and
+    # was processed by the server (e.g. a gateway timeout after WP finished
+    # the write) -- retrying a non-idempotent POST in that case creates a
+    # duplicate, live, unreviewed post. _try_publish_article() already moves
+    # on to the next candidate on failure, which is the safe way to recover.
     retry = Retry(
         total=2, backoff_factor=1,
         status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET", "POST"],
+        allowed_methods=["GET"],
     )
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)
