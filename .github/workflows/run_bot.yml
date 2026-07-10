@@ -32,17 +32,39 @@ jobs:
           WP_USER: ${{ secrets.WP_USER }}
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python -c "from scheduler import run_daily_job; run_daily_job()"
+        # exit(1) only on "every candidate failed" -- "no_candidates" (a
+        # normal day with nothing new to publish) stays success so it
+        # doesn't trip the alert step below on ordinary quiet days.
+        run: |
+          python -c "
+          from scheduler import run_daily_job
+          import sys
+          outcome = run_daily_job()
+          sys.exit(1 if outcome == 'all_failed' else 0)
+          "
 
+      # Always run, even if "Run bot" failed -- a day with zero commits (e.g.
+      # an unhandled crash before last_run.json is written) is exactly the
+      # silent-failure pattern from the 2026-07 audit, and after ~60 days of
+      # zero repo activity GitHub auto-disables the scheduled trigger.
       - name: Save state
-        if: success()
+        if: always()
         run: |
           git config user.email "bot@etiaseuropa.eu"
           git config user.name "ETIAS Bot"
-          git add posted_articles.json
+          git add posted_articles.json last_run.json 2>/dev/null || true
           if ! git diff --staged --quiet; then
             git commit -m "bot: update posted articles [skip ci]"
             git push
           else
             echo "No state changes to commit"
           fi
+
+      - name: Alert on failure
+        if: failure() && env.ALERT_WEBHOOK_URL != ''
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          curl -fsS -X POST "$ALERT_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\": \"etias-bot: run failed (run ${{ github.run_id }}) - https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"

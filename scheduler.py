@@ -1,13 +1,23 @@
+import json
+import logging
 import os
 import schedule
 import time
 import yaml
 import re
+from datetime import datetime, timezone
 from scraper import get_new_articles, fetch_article_content, load_posted, save_posted, load_post_links
 from agent import generate_post, set_recent_posts
 from publisher import publish_post
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
+_HEARTBEAT_PATH = os.path.join(os.path.dirname(__file__), "last_run.json")
 
 with open(_CONFIG_PATH) as f:
     config = yaml.safe_load(f)
@@ -23,7 +33,7 @@ def is_valid_post_title(title):
 
 
 def _skip(article, reason):
-    print(f"  ⛔ {reason}, saltando.")
+    logger.info("%s, saltando: %s", reason, article["url"])
     posted_urls, posted_titles = load_posted()
     posted_urls.add(article["url"])
     save_posted(posted_urls, posted_titles)
@@ -42,8 +52,8 @@ META_PHRASES = [
 
 def _try_publish_article(article):
     """Attempt one candidate end to end. Returns True on a successful publish."""
-    print(f"Procesando: {article['title']}")
-    print(f"  URL: {article['url']}")
+    logger.info("Procesando: %s", article["title"])
+    logger.info("  URL: %s", article["url"])
 
     source_data = fetch_article_content(article["url"])
 
@@ -59,7 +69,7 @@ def _try_publish_article(article):
         _skip(article, "Título fuente inválido")
         return False
 
-    print("  Generando post con Claude Haiku...")
+    logger.info("  Generando post con Claude Haiku...")
     set_recent_posts(load_post_links())
 
     try:
@@ -71,8 +81,9 @@ def _try_publish_article(article):
     except Exception as e:
         # Anthropic call can throw (rate limit, timeout, transient API error) --
         # an uncaught exception here used to crash the whole job and leave the
-        # remaining candidates untried for the day.
-        print(f"  ⚠ Error llamando a Claude: {e}")
+        # remaining candidates untried for the day. _call_claude() now retries
+        # transient errors itself; this catch is the last-resort backstop.
+        logger.warning("Error llamando a Claude: %s", e)
         return False
 
     if post_data is None:
@@ -89,7 +100,7 @@ def _try_publish_article(article):
             _skip(article, f"Contenido generado contiene meta-comentario ('{phrase}')")
             return False
 
-    print(f"  Publicando: '{post_data['title']}'...")
+    logger.info("  Publicando: '%s'...", post_data["title"])
     try:
         result = publish_post(
             title=post_data["title"],
@@ -100,11 +111,14 @@ def _try_publish_article(article):
             meta_description=post_data.get("meta_description"),
         )
     except Exception as e:
-        print(f"  ⚠ Error de red publicando en WordPress: {e}")
+        # publish_post() already catches requests.exceptions.RequestException
+        # internally and returns None -- this is a true last-resort backstop,
+        # not the expected path, so treat it as an error, not a network log line.
+        logger.error("Error inesperado publicando en WordPress: %s", e)
         return False
 
     if not result:
-        print("  ⛔ Error al publicar en WordPress")
+        logger.warning("Error al publicar en WordPress (ver logs de publisher.py arriba)")
         return False
 
     posted_urls, posted_titles = load_posted()
@@ -114,35 +128,69 @@ def _try_publish_article(article):
     if result.get("link"):
         post_links.append({"title": post_data["title"], "url": result["link"]})
     save_posted(posted_urls, posted_titles, post_links=post_links)
-    print(f"  ✅ Post publicado correctamente (ID: {result['id']})")
+    logger.info("Post publicado correctamente (ID: %s)", result["id"])
     return True
 
 
+def _write_heartbeat(outcome, detail=""):
+    """Always touch last_run.json so the daily workflow always has a diff to
+    commit -- even on a 'no new articles today' day. Without this, a run of
+    empty-candidate days in a row produces zero commits, and GitHub disables
+    scheduled workflows after 60 days with no repository activity (see
+    audit 2026-07-10). This also gives us a queryable history of outcomes
+    distinct from "did a post happen", which run_daily_job's return value
+    alone didn't provide to the workflow layer before.
+    """
+    with open(_HEARTBEAT_PATH, "w") as f:
+        json.dump({
+            "last_run_utc": datetime.now(timezone.utc).isoformat(),
+            "outcome": outcome,
+            "detail": detail,
+        }, f, indent=2)
+
+
 def run_daily_job():
-    print("=== ETIAS Bot - Iniciando ejecución diaria ===")
-    print("Buscando artículos nuevos en etias.com y fuentes RSS...")
+    """Returns one of: 'published', 'no_candidates', 'all_failed'.
+
+    Distinguishing these (instead of just returning/printing) lets CI-level
+    alerting (see .github/workflows/run_bot.yml) tell a real "nothing new to
+    publish today" apart from "every candidate failed" -- previously both
+    looked identical (job exits 0, nothing published) from the outside.
+    """
+    logger.info("=== ETIAS Bot - Iniciando ejecución diaria ===")
+    logger.info("Buscando artículos nuevos en etias.com y fuentes RSS...")
     new_articles = get_new_articles(config["source_url"])
 
     if not new_articles:
-        print("No hay artículos nuevos hoy.")
-        return
+        logger.info("No hay artículos nuevos hoy.")
+        _write_heartbeat("no_candidates")
+        return "no_candidates"
 
     # Try candidates in order until one publishes successfully -- previously
     # only new_articles[0] was ever attempted, so a single bad candidate (dead
     # link, thin content, Claude hiccup) meant zero posts for the whole day
     # even when other valid candidates were sitting right behind it.
+    outcome = "all_failed"
     for article in new_articles:
         if _try_publish_article(article):
+            outcome = "published"
             break
     else:
-        print("  Ningún candidato de hoy pudo publicarse.")
+        logger.warning("Ningún candidato de hoy pudo publicarse (%d intentados).", len(new_articles))
 
-    print("=== ETIAS Bot - Ejecución completada ===")
+    _write_heartbeat(outcome, detail=f"{len(new_articles)} candidatos evaluados")
+    logger.info("=== ETIAS Bot - Ejecución completada (%s) ===", outcome)
+    return outcome
 
 
 if __name__ == "__main__":
-    print(f"Agente iniciado. Publicara 1 borrador/dia a las {config['schedule_time']}")
-    run_daily_job()
+    logger.info("Agente iniciado. Publicara 1 borrador/dia a las %s", config["schedule_time"])
+    outcome = run_daily_job()
+    if outcome == "all_failed":
+        # Non-zero exit on a real failure (as opposed to "no candidates",
+        # which is a normal day) so CI can flag it distinctly if desired.
+        import sys
+        sys.exit(1)
     schedule.every().day.at(config["schedule_time"]).do(run_daily_job)
     while True:
         schedule.run_pending()

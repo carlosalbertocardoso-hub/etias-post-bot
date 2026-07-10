@@ -1,3 +1,4 @@
+import logging
 import re
 import requests
 from requests.adapters import HTTPAdapter
@@ -7,6 +8,8 @@ import feedparser
 import json
 import os
 from datetime import datetime, timezone, timedelta
+
+logger = logging.getLogger(__name__)
 
 POSTED_FILE = "posted_articles.json"
 ETIAS_ARTICLES = "https://etias.com/articles/"
@@ -97,7 +100,18 @@ def _is_duplicate_topic(title, posted_titles, threshold=0.45):
 
 
 def load_posted():
-    """Returns (urls: set, titles: list)."""
+    """Returns (urls: set, titles: list).
+
+    These two are NOT index-paired and will naturally have different
+    lengths -- do not zip() them. `urls` marks every candidate ever visited
+    (published AND skipped, via _skip() in scheduler.py, which records the
+    URL without a title). `titles` holds only the titles of posts that were
+    actually published, and exists solely to feed _is_duplicate_topic()'s
+    topic-similarity dedup. A historical stray URL that had leaked into
+    `titles` (pre-dating the is_valid_post_title() guard in scheduler.py)
+    was manually cleaned up in commit f219893 (2026-07-05); verified via
+    audit 2026-07-10 that current code no longer allows that class of entry.
+    """
     if os.path.exists(POSTED_FILE):
         with open(POSTED_FILE, "r") as f:
             data = json.load(f)
@@ -136,7 +150,7 @@ def _scrape_etias_articles(posted_urls):
     try:
         response = SESSION.get(ETIAS_ARTICLES, timeout=15, headers=HEADERS)
     except Exception as e:
-        print(f"  ⚠ Error al scrapear {ETIAS_ARTICLES}: {e}")
+        logger.warning("Error al scrapear %s: %s", ETIAS_ARTICLES, e)
         return []
     soup = BeautifulSoup(response.text, "html.parser")
 
@@ -170,11 +184,11 @@ def _scrape_rss(rss_url, posted_urls, seen):
     try:
         r = SESSION.get(rss_url, timeout=15, headers=HEADERS)
         if r.status_code != 200:
-            print(f"  ⚠ RSS {rss_url} devolvió status {r.status_code}")
+            logger.warning("RSS %s devolvió status %s", rss_url, r.status_code)
             return []
         feed = feedparser.parse(r.content)
     except Exception as e:
-        print(f"  ⚠ Error al leer RSS {rss_url}: {e}")
+        logger.warning("Error al leer RSS %s: %s", rss_url, e)
         return []
 
     for entry in feed.entries:
@@ -224,7 +238,7 @@ def fetch_article_content(url):
     try:
         response = SESSION.get(url, timeout=15, headers=HEADERS)
     except Exception as e:
-        print(f"  ⚠ Error al obtener {url}: {e}")
+        logger.warning("Error al obtener %s: %s", url, e)
         return {"title": "", "content": "", "url": url, "image_url": None, "valid": False}
     soup = BeautifulSoup(response.text, "html.parser")
 
@@ -254,7 +268,7 @@ def fetch_article_content(url):
 
     # If still no title or title is a URL, we can't use this article
     if not title or title.startswith("http"):
-        print(f"  ⚠ No se pudo extraer título de {domain}, saltando.")
+        logger.warning("No se pudo extraer título de %s, saltando.", domain)
         return {"title": "", "content": "", "url": url, "image_url": None, "valid": False}
 
     image_url = None

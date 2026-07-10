@@ -1,3 +1,5 @@
+import logging
+import time
 import anthropic
 import yaml
 import os
@@ -6,6 +8,8 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
 
@@ -20,8 +24,12 @@ client = anthropic.Anthropic(api_key=api_key)
 
 SITE_URL = "https://etiaseuropa.eu"
 SITE_NAME = "ETIASEuropa"
-AUTHOR_NAME = "Carlos Cardoso"
-AUTHOR_URL = "https://etiaseuropa.eu/author/carlos-cardoso/"
+# Deliberately NOT a named individual: every post here is 100% AI-generated
+# with zero human editorial review before publish (post_status: publish).
+# Attributing invented professional credentials to a real person's name would
+# be the exact "fabricated authorship" pattern Google's helpful-content
+# guidance calls out -- see audit 2026-07-10.
+AUTHOR_NAME = "the ETIASEuropa Editorial Team"
 TODAY = datetime.now(timezone.utc).strftime("%B %d, %Y")
 
 # Recent published posts (title + real URL) for internal linking context.
@@ -62,7 +70,7 @@ def _sanitize_internal_links(html_body, allowed_urls):
         href, anchor_text = match.group(1), match.group(2)
         if href in allowed:
             return match.group(0)
-        print(f"  ⚠ Enlace no reconocido eliminado (no es un candidato real): {href}")
+        logger.warning("Enlace no reconocido eliminado (no es un candidato real): %s", href)
         return anchor_text
 
     return _HREF_RE.sub(_keep_or_strip, html_body)
@@ -101,13 +109,24 @@ def generate_meta_description(title, content_text):
     return meta.strip()[:160]
 
 
-def _call_claude(prompt, max_tokens=4000):
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return message.content[0].text.strip()
+def _call_claude(prompt, max_tokens=4000, max_retries=2):
+    # Retry only the transient/rate-limit cases -- scheduler.py's comment
+    # already called out rate limits as an expected failure mode, but nothing
+    # retried them; a single 429 used to burn the whole day's only candidate.
+    for attempt in range(max_retries + 1):
+        try:
+            message = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return message.content[0].text.strip()
+        except (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.InternalServerError) as e:
+            if attempt == max_retries:
+                raise
+            wait = 2 ** attempt
+            logger.warning("Claude API error (%s), reintentando en %ss (%s/%s)", e, wait, attempt + 1, max_retries)
+            time.sleep(wait)
 
 
 def _parse_generated_post(response_text, allowed_link_urls=()):
@@ -145,12 +164,12 @@ def _parse_generated_post(response_text, allowed_link_urls=()):
         title = "ETIAS Update"
 
     if re.match(r"^https?://", title):
-        print(f"  ⚠ Título inválido (es una URL): {title[:60]}...")
+        logger.warning("Título inválido (es una URL): %s...", title[:60])
         return None
 
     if not meta_desc or len(meta_desc) < 50:
         meta_desc = generate_meta_description(title, body)
-        print(f"  ℹ Meta description auto-generada ({len(meta_desc)} chars)")
+        logger.info("Meta description auto-generada (%s chars)", len(meta_desc))
     elif len(meta_desc) > 160:
         # Google truncates SERP snippets around ~155-160 chars -- Claude's
         # own META: line isn't length-capped like the auto-fallback is.
@@ -187,7 +206,7 @@ _COMMON_RULES = f"""- Output format:
 - Write in flowing paragraphs under each subheading — no bullet lists, no numbered lists unless comparing options
 - Tone: warm, clear, trustworthy — like advice from a knowledgeable friend
 - Naturally include these SEO keywords where they fit: ETIAS, Schengen area, European travel, visa-free travel, travel authorization
-- Near the end, close with a byline paragraph mentioning {AUTHOR_NAME} and that it was last updated {TODAY}, advising readers to verify current requirements on official EU channels -- write this naturally in your own words, do NOT copy a fixed sentence (this exact sentence must NOT be identical across articles, so vary the phrasing every time)
+- Near the end, close with a short editorial note stating this was reviewed by {AUTHOR_NAME}, last updated {TODAY}, advising readers to verify current requirements on official EU channels -- write this naturally in your own words, do NOT copy a fixed sentence (this exact sentence must NOT be identical across articles, so vary the phrasing every time). Do NOT invent a job title, professional credential, personal biography, or claim of first-hand experience for {AUTHOR_NAME} -- it is an editorial team, not an individual expert, and this must read as a factual editorial note only
 - Never mention the source website or the source article
 - Never use markdown symbols like #, **, or * anywhere
 - Never write meta-commentary ("the source doesn't match", "I cannot write about this topic", "the instructions say") — just write the article"""
