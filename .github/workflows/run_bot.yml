@@ -8,6 +8,16 @@ on:
 permissions:
   contents: write
 
+# Without this, an overlapping manual dispatch during the daily cron run
+# would let two processes each read their own checkout of
+# posted_articles.json, neither seeing the other's in-flight publish -- the
+# exact same-title-published-twice failure mode the scheduler.py dedup fix
+# (audit 2026-07-10) targets, just re-opened at the workflow level instead
+# of the code level.
+concurrency:
+  group: etias-bot-publish
+  cancel-in-progress: false
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest

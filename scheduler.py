@@ -6,7 +6,10 @@ import time
 import yaml
 import re
 from datetime import datetime, timezone
-from scraper import get_new_articles, fetch_article_content, load_posted, save_posted, load_post_links
+from scraper import (
+    get_new_articles, fetch_article_content, load_posted, save_posted,
+    load_post_links, _is_duplicate_topic,
+)
 from agent import generate_post, set_recent_posts
 from publisher import publish_post
 
@@ -99,6 +102,19 @@ def _try_publish_article(article):
         if phrase in content_lower:
             _skip(article, f"Contenido generado contiene meta-comentario ('{phrase}')")
             return False
+
+    # get_new_articles() only dedupes the *source* headline against past
+    # generated titles -- two source articles worded differently enough to
+    # pass that filter can still make Claude converge on nearly the same
+    # blog title/angle for the same underlying event (confirmed live: post
+    # 1269/1274 "ETIAS for Sea Travel...", 1 day apart; 1185/1379 "EES and
+    # Border Delays...", 2 months apart -- see audit 2026-07-10). Re-check
+    # the actual generated title, which is what really collides, before
+    # publishing it.
+    _, posted_titles = load_posted()
+    if _is_duplicate_topic(post_data["title"], posted_titles):
+        _skip(article, f"Título generado duplica tema ya publicado: '{post_data['title'][:60]}'")
+        return False
 
     logger.info("  Publicando: '%s'...", post_data["title"])
     try:

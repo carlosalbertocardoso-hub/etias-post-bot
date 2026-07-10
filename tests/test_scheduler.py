@@ -1,6 +1,7 @@
 import json
 
 import scheduler
+import scraper
 from scheduler import is_valid_post_title
 
 
@@ -71,3 +72,58 @@ def test_run_daily_job_publishes_on_first_success(monkeypatch, tmp_path):
 
     assert outcome == "published"
     assert calls == ["https://x/1"]  # stops after first success, doesn't try the rest
+
+
+def test_try_publish_article_skips_when_generated_title_duplicates_posted(monkeypatch, tmp_path):
+    # Regression for the live incident (audit 2026-07-10): get_new_articles()
+    # only dedupes the *source* headline against past generated titles.
+    # Two differently-worded source articles about the same event can both
+    # pass that filter, then Claude independently converges on the exact
+    # same blog title for both (confirmed live: posts 1269/1274, 1 day
+    # apart, and 1185/1379, 2 months apart -- identical title.rendered).
+    # This asserts the actual generated title is now re-checked before the
+    # live WordPress write happens.
+    posted_file = tmp_path / "posted_articles.json"
+    already_published_title = "ETIAS for Sea Travel: Ferry and Cruise Passengers Need Authorization"
+    posted_file.write_text(json.dumps({
+        "urls": ["https://source/already-covered"],
+        "titles": [already_published_title],
+        "post_links": [],
+    }))
+    monkeypatch.setattr(scraper, "POSTED_FILE", str(posted_file))
+
+    monkeypatch.setattr(
+        scheduler, "fetch_article_content",
+        lambda url: {
+            "title": "Cruise passengers must apply for travel authorization",
+            "content": "x" * 200,
+            "url": url,
+            "image_url": None,
+            "valid": True,
+        },
+    )
+    monkeypatch.setattr(scheduler, "set_recent_posts", lambda posts: None)
+    monkeypatch.setattr(
+        scheduler, "generate_post",
+        lambda *a, **kw: {
+            "title": already_published_title,  # Claude converges on the same title
+            "content": "<p>body</p>",
+            "meta_description": "desc",
+            "categories": [1],
+        },
+    )
+    publish_calls = []
+    monkeypatch.setattr(
+        scheduler, "publish_post",
+        lambda **kw: publish_calls.append(kw) or {"id": 1, "link": "https://x"},
+    )
+
+    article = {"url": "https://source/2", "title": "Cruise passengers must apply for travel authorization"}
+    result = scheduler._try_publish_article(article)
+
+    assert result is False
+    assert publish_calls == []  # never reaches the live write
+
+    # And the skip is durably recorded, same as any other _skip() path.
+    saved = json.loads(posted_file.read_text())
+    assert "https://source/2" in saved["urls"]
