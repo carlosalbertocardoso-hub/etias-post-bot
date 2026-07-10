@@ -1,8 +1,0 @@
-anthropic
-requests
-beautifulsoup4
-pyyaml
-python-dotenv
-functions-framework==3.*
-firebase-admin
-google-cloud-firestore
