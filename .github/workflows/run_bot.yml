@@ -22,6 +22,17 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
 
+    # The `secrets` context is NOT permitted in any `if:` conditional
+    # (job-level or step-level) -- GitHub evaluates `if:` before the job is
+    # sent to the runner, at which point secrets aren't available yet. The
+    # documented workaround is to expose the secret as a job-level env var
+    # here, since job-level (and workflow-level) env IS visible inside a
+    # step's `if:`. A step's own `env:` block is NOT visible in that same
+    # step's `if:` -- only job/workflow-level env is -- so this must stay
+    # job-level for the "Alert on failure" step below to work.
+    env:
+      ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -72,13 +83,7 @@ jobs:
           fi
 
       - name: Alert on failure
-        # A step's own env: block is NOT visible in that same step's if:
-        # (only job/workflow-level env is) -- must reference secrets.* here
-        # directly, otherwise this condition is permanently false regardless
-        # of whether the secret is configured.
-        if: failure() && secrets.ALERT_WEBHOOK_URL != ''
-        env:
-          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        if: failure() && env.ALERT_WEBHOOK_URL != ''
         run: |
           curl -fsS -X POST "$ALERT_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
